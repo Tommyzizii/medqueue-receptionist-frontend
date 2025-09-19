@@ -14,7 +14,7 @@ interface Patient {
   id: number;
   name: string;
   status: Status;
-  queueNo: number; // ✅ new field
+  queueNo: number; 
 }
 
 const statusColors: Record<Status, string> = {
