@@ -1,22 +1,29 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Check, Clock, UserPlus, XCircle, Activity, Stethoscope, Hash } from "lucide-react";
+import { Check, Clock, UserPlus, XCircle, Activity, Stethoscope, Hash, Calendar } from "lucide-react";
+import MedqueueAPI from "@/lib/api";
 
 type Status = "Waiting" | "Arrived" | "In consultation" | "Completed" | "No-show";
+type PatientType = "walk-in" | "appointment";
 
 interface Patient {
-  id: number;
+  id: string;
   name: string;
   status: Status;
-  queueNo: number; 
+  queueNo: number;
+  serviceTime: string; // Expected service time slot
+  appointmentId?: string;
+  email?: string;
+  type: PatientType;
+  scheduledTime?: Date; // For appointments
 }
-//test
+
 const statusColors: Record<Status, string> = {
   Waiting: "bg-gradient-to-r from-slate-50 to-slate-100 text-slate-700 border border-slate-200 shadow-sm",
   Arrived: "bg-gradient-to-r from-blue-50 to-cyan-50 text-blue-700 border border-blue-200 shadow-sm shadow-blue-100",
@@ -32,7 +39,7 @@ const statusActions: { label: string; icon: React.ReactNode; status: Status }[] 
   { label: "No-show", icon: <XCircle className="w-4 h-4 mr-1" />, status: "No-show" },
 ];
 
-function PatientCard({ patient, updateStatus }: { patient: Patient; updateStatus: (id: number, status: Status) => void }) {
+function PatientCard({ patient, updateStatus }: { patient: Patient; updateStatus: (id: string, status: Status) => void }) {
   return (
     <Card className="group relative overflow-hidden bg-white/70 backdrop-blur-sm border-0 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 rounded-2xl">
       <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-transparent pointer-events-none" />
@@ -43,10 +50,19 @@ function PatientCard({ patient, updateStatus }: { patient: Patient; updateStatus
               <Hash className="w-4 h-4" /> {patient.queueNo}
             </Badge>
             {patient.name}
+            <Badge className={`${patient.type === 'appointment' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'} text-xs`}>
+              {patient.type === 'appointment' ? 'Appointment' : 'Walk-in'}
+            </Badge>
           </h2>
-          <Badge className={`${statusColors[patient.status]} font-medium px-3 py-1 rounded-full text-sm backdrop-blur-sm`}>
-            {patient.status}
-          </Badge>
+          <div className="flex gap-2 items-center">
+            <Badge className={`${statusColors[patient.status]} font-medium px-3 py-1 rounded-full text-sm backdrop-blur-sm`}>
+              {patient.status}
+            </Badge>
+            <Badge className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-xs flex items-center gap-1">
+              <Calendar className="w-3 h-3" />
+              {patient.serviceTime}
+            </Badge>
+          </div>
         </div>
         <div className="flex gap-2">
           {statusActions.map((action) => (
@@ -67,32 +83,249 @@ function PatientCard({ patient, updateStatus }: { patient: Patient; updateStatus
 }
 
 export default function ReceptionistDashboard() {
-  const [patients, setPatients] = useState<Patient[]>([
-    { id: 1, name: "John Doe", status: "Arrived", queueNo: 1 },
-    { id: 2, name: "Jane Smith", status: "In consultation", queueNo: 2 },
-    { id: 3, name: "Alice Johnson", status: "Completed", queueNo: 3 },
-  ]);
+  const [patients, setPatients] = useState<Patient[]>([]);
   const [newPatient, setNewPatient] = useState("");
-  const [nextQueueNo, setNextQueueNo] = useState(4); 
-  const handleAddPatient = () => {
-    if (!newPatient.trim()) return;
-    setPatients([
-      ...patients,
-      { id: patients.length + 1, name: newPatient, status: "Waiting", queueNo: nextQueueNo },
-    ]);
-    setNewPatient("");
-    setNextQueueNo(nextQueueNo + 1); // increment queue number
+  const [appointmentPatient, setAppointmentPatient] = useState("");
+  const [appointmentTime, setAppointmentTime] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Test API connection on component mount
+  useEffect(() => {
+    testAPIConnection();
+  }, []);
+
+  const testAPIConnection = async () => {
+    try {
+      const response = await MedqueueAPI.testConnection();
+      console.log("API Connection successful:", response);
+    } catch (error) {
+      console.error("API Connection failed:", error);
+      setError("Failed to connect to backend API. Check console for details.");
+    }
   };
 
-  const updateStatus = (id: number, newStatus: Status) => {
-    setPatients(patients.map((p) => (p.id === id ? { ...p, status: newStatus } : p)));
+  // Calculate next available time slot for walk-ins
+  const getNextAvailableSlot = (): Date => {
+    const now = new Date();
+    let nextSlot = new Date();
+    
+    // Start from current time, round up to next 30-minute slot
+    const minutes = now.getMinutes();
+    const roundedMinutes = minutes <= 30 ? 30 : 60;
+    
+    if (roundedMinutes === 60) {
+      nextSlot.setHours(now.getHours() + 1, 0, 0, 0);
+    } else {
+      nextSlot.setHours(now.getHours(), roundedMinutes, 0, 0);
+    }
+    
+    // Keep adding 30 minutes until we find an available slot
+    let attempts = 0;
+    while (attempts < 48) { // Max 24 hours of searching
+      const timeSlotTaken = patients.some(p => {
+        if (p.scheduledTime) {
+          return Math.abs(p.scheduledTime.getTime() - nextSlot.getTime()) < 15 * 60 * 1000; // 15 minute buffer
+        }
+        return false;
+      });
+      
+      if (!timeSlotTaken) {
+        return nextSlot;
+      }
+      
+      // Move to next 30-minute slot
+      nextSlot = new Date(nextSlot.getTime() + 30 * 60 * 1000);
+      attempts++;
+    }
+    
+    return nextSlot; // Fallback
+  };
+
+  // Format time slot for display
+  const formatTimeSlot = (date: Date): string => {
+    const startTime = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const endTime = new Date(date.getTime() + 30 * 60 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return `${startTime}-${endTime}`;
+  };
+
+  // Get next queue number
+  const getNextQueueNumber = (): number => {
+    return patients.length + 1;
+  };
+
+  const handleAddWalkIn = async () => {
+    if (!newPatient.trim()) return;
+    
+    setLoading(true);
+    setError("");
+    
+    try {
+      // Add timestamp to email to make it unique
+      const timestamp = Date.now();
+      const email = `${newPatient.toLowerCase().replace(/\s+/g, '.')}.${timestamp}@clinic.com`;
+      const nextSlot = getNextAvailableSlot();
+      const queueNumber = getNextQueueNumber();
+      
+      console.log("Adding walk-in patient:", newPatient, "Email:", email);
+      const signupResponse = await MedqueueAPI.signupPatient(newPatient, email, "defaultpass123");
+      
+      if (signupResponse.success) {
+        const patientId = signupResponse.patient.id;
+        
+        const appointmentResponse = await MedqueueAPI.bookAppointment(
+          patientId,
+          "DOC001",
+          nextSlot.toISOString()
+        );
+        
+        if (appointmentResponse.success) {
+          const queueResponse = await MedqueueAPI.generateQueueNumber(appointmentResponse.appointmentId);
+          
+          const newPatientData: Patient = {
+            id: patientId,
+            name: newPatient,
+            status: "Waiting",
+            queueNo: queueNumber,
+            serviceTime: formatTimeSlot(nextSlot),
+            appointmentId: appointmentResponse.appointmentId,
+            email: email,
+            type: "walk-in",
+            scheduledTime: nextSlot
+          };
+          
+          setPatients(prev => [...prev, newPatientData]);
+          setNewPatient("");
+          console.log("Walk-in patient added successfully:", newPatientData);
+        }
+      }
+    } catch (error) {
+      console.error("Error adding walk-in patient:", error);
+      setError(`Failed to add walk-in patient: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddAppointment = async () => {
+    if (!appointmentPatient.trim() || !appointmentTime) return;
+    
+    setLoading(true);
+    setError("");
+    
+    try {
+      const email = `${appointmentPatient.toLowerCase().replace(/\s+/g, '.')}@clinic.com`;
+      const appointmentDate = new Date(appointmentTime);
+      
+      // Check if appointment time conflicts with existing slots
+      const conflictingPatient = patients.find(p => {
+        if (p.scheduledTime) {
+          return Math.abs(p.scheduledTime.getTime() - appointmentDate.getTime()) < 30 * 60 * 1000;
+        }
+        return false;
+      });
+      
+      if (conflictingPatient) {
+        setError("This time slot is already taken. Please choose a different time.");
+        setLoading(false);
+        return;
+      }
+      
+      // Calculate queue number based on scheduled time relative to existing patients
+      const earlierPatients = patients.filter(p => 
+        p.scheduledTime && p.scheduledTime < appointmentDate
+      ).length;
+      
+      const queueNumber = earlierPatients + 1;
+      
+      console.log("Adding appointment patient:", appointmentPatient);
+      const signupResponse = await MedqueueAPI.signupPatient(appointmentPatient, email, "defaultpass123");
+      
+      if (signupResponse.success) {
+        const patientId = signupResponse.patient.id;
+        
+        const appointmentResponse = await MedqueueAPI.bookAppointment(
+          patientId,
+          "DOC001",
+          appointmentDate.toISOString()
+        );
+        
+        if (appointmentResponse.success) {
+          const queueResponse = await MedqueueAPI.generateQueueNumber(appointmentResponse.appointmentId);
+          
+          const newPatientData: Patient = {
+            id: patientId,
+            name: appointmentPatient,
+            status: "Waiting",
+            queueNo: queueNumber,
+            serviceTime: formatTimeSlot(appointmentDate),
+            appointmentId: appointmentResponse.appointmentId,
+            email: email,
+            type: "appointment",
+            scheduledTime: appointmentDate
+          };
+          
+          // Insert appointment in correct position and renumber subsequent patients
+          const updatedPatients = [...patients];
+          const insertIndex = updatedPatients.findIndex(p => 
+            p.scheduledTime && p.scheduledTime > appointmentDate
+          );
+          
+          if (insertIndex === -1) {
+            updatedPatients.push(newPatientData);
+          } else {
+            updatedPatients.splice(insertIndex, 0, newPatientData);
+            // Renumber patients after insertion point
+            for (let i = insertIndex + 1; i < updatedPatients.length; i++) {
+              updatedPatients[i].queueNo = i + 1;
+            }
+          }
+          
+          setPatients(updatedPatients);
+          setAppointmentPatient("");
+          setAppointmentTime("");
+        }
+      }
+    } catch (error) {
+      console.error("Error adding appointment:", error);
+      setError(`Failed to add appointment: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateStatus = async (patientId: string, newStatus: Status) => {
+    try {
+      const patient = patients.find(p => p.id === patientId);
+      if (!patient || !patient.appointmentId) return;
+
+      console.log(`Updating patient ${patient.name} status to: ${newStatus}`);
+
+      if (newStatus === "Arrived") {
+        const checkinResponse = await MedqueueAPI.checkInPatient(patient.appointmentId);
+        console.log("Check-in response:", checkinResponse);
+      }
+
+      setPatients(patients.map((p) => 
+        p.id === patientId ? { ...p, status: newStatus } : p
+      ));
+      
+    } catch (error) {
+      console.error("Error updating patient status:", error);
+      setError(`Failed to update status: ${error.message}`);
+    }
   };
 
   const getCount = (status: Status) => patients.filter((p) => p.status === status).length;
 
+  // Sort patients by scheduled time for display
+  const sortedPatients = [...patients].sort((a, b) => {
+    if (!a.scheduledTime || !b.scheduledTime) return 0;
+    return a.scheduledTime.getTime() - b.scheduledTime.getTime();
+  });
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
-      {/* Header */}
       <div className="relative p-8 max-w-6xl mx-auto">
         <div className="text-center mb-12">
           <div className="inline-flex items-center gap-3 mb-4">
@@ -106,32 +339,83 @@ export default function ReceptionistDashboard() {
           <p className="text-gray-600 text-lg">Manage patient appointments and track consultation status</p>
         </div>
 
-        {/* Add Walk-in Patients */}
-        <Card className="mb-8 bg-white/70 backdrop-blur-sm border-0 shadow-xl rounded-3xl overflow-hidden">
-          <CardHeader className="relative">
-            <CardTitle className="text-xl font-semibold flex items-center gap-3 text-gray-800">
-              <div className="p-2 bg-blue-100 rounded-xl">
-                <UserPlus className="w-5 h-5 text-blue-600" />
-              </div>
-              Add Walk-in Patient
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="relative flex gap-4">
-            <Input
-              placeholder="Enter patient name..."
-              value={newPatient}
-              onChange={(e) => setNewPatient(e.target.value)}
-              className="flex-1 rounded-2xl border-gray-200 bg-white/80 backdrop-blur-sm focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all duration-200 text-lg py-6"
-            />
-            <Button 
-              onClick={handleAddPatient} 
-              className="rounded-2xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white shadow-lg hover:shadow-xl transition-all duration-200 hover:scale-105 px-8 py-6 text-lg font-medium"
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+            {error}
+            <button 
+              onClick={() => setError("")} 
+              className="ml-4 text-red-900 hover:text-red-700"
             >
-              <UserPlus className="w-5 h-5 mr-2" />
-              Add Patient
-            </Button>
-          </CardContent>
-        </Card>
+              ×
+            </button>
+          </div>
+        )}
+
+        {/* Add Patients Section */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          {/* Walk-in Patients */}
+          <Card className="bg-white/70 backdrop-blur-sm border-0 shadow-xl rounded-3xl overflow-hidden">
+            <CardHeader>
+              <CardTitle className="text-xl font-semibold flex items-center gap-3 text-gray-800">
+                <div className="p-2 bg-green-100 rounded-xl">
+                  <UserPlus className="w-5 h-5 text-green-600" />
+                </div>
+                Add Walk-in Patient
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex gap-4">
+              <Input
+                placeholder="Enter patient name..."
+                value={newPatient}
+                onChange={(e) => setNewPatient(e.target.value)}
+                className="flex-1 rounded-2xl border-gray-200 bg-white/80"
+                disabled={loading}
+              />
+              <Button 
+                onClick={handleAddWalkIn} 
+                disabled={loading || !newPatient.trim()}
+                className="rounded-2xl bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white"
+              >
+                {loading ? "Adding..." : "Add"}
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Scheduled Appointments */}
+          <Card className="bg-white/70 backdrop-blur-sm border-0 shadow-xl rounded-3xl overflow-hidden">
+            <CardHeader>
+              <CardTitle className="text-xl font-semibold flex items-center gap-3 text-gray-800">
+                <div className="p-2 bg-blue-100 rounded-xl">
+                  <Calendar className="w-5 h-5 text-blue-600" />
+                </div>
+                Add Scheduled Appointment
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Input
+                placeholder="Enter patient name..."
+                value={appointmentPatient}
+                onChange={(e) => setAppointmentPatient(e.target.value)}
+                className="rounded-2xl border-gray-200 bg-white/80"
+                disabled={loading}
+              />
+              <Input
+                type="datetime-local"
+                value={appointmentTime}
+                onChange={(e) => setAppointmentTime(e.target.value)}
+                className="rounded-2xl border-gray-200 bg-white/80"
+                disabled={loading}
+              />
+              <Button 
+                onClick={handleAddAppointment} 
+                disabled={loading || !appointmentPatient.trim() || !appointmentTime}
+                className="w-full rounded-2xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white"
+              >
+                {loading ? "Adding..." : "Schedule Appointment"}
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Tabs */}
         <Tabs defaultValue="All" className="space-y-6">
@@ -146,19 +430,23 @@ export default function ReceptionistDashboard() {
             ))}
           </TabsList>
 
-          {/* All Patients */}
           <TabsContent value="All" className="space-y-4">
-            {patients.map((p, i) => (
-              <div key={p.id} className="animate-in slide-in-from-left duration-500" style={{ animationDelay: `${i * 100}ms` }}>
-                <PatientCard patient={p} updateStatus={updateStatus} />
+            {sortedPatients.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                No patients in queue. Add walk-ins or schedule appointments to get started.
               </div>
-            ))}
+            ) : (
+              sortedPatients.map((p, i) => (
+                <div key={p.id} className="animate-in slide-in-from-left duration-500" style={{ animationDelay: `${i * 100}ms` }}>
+                  <PatientCard patient={p} updateStatus={updateStatus} />
+                </div>
+              ))
+            )}
           </TabsContent>
 
-          {/* Filtered Patients */}
           {(Object.keys(statusColors) as Status[]).map((status) => (
             <TabsContent value={status} key={status} className="space-y-4">
-              {patients.filter((p) => p.status === status).map((p, i) => (
+              {sortedPatients.filter((p) => p.status === status).map((p, i) => (
                 <div key={p.id} className="animate-in slide-in-from-left duration-500" style={{ animationDelay: `${i * 100}ms` }}>
                   <PatientCard patient={p} updateStatus={updateStatus} />
                 </div>
