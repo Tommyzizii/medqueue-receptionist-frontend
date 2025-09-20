@@ -16,7 +16,7 @@ interface Patient {
   status: Status;
   queueNo: number; 
 }
-
+//test
 const statusColors: Record<Status, string> = {
   Waiting: "bg-gradient-to-r from-slate-50 to-slate-100 text-slate-700 border border-slate-200 shadow-sm",
   Arrived: "bg-gradient-to-r from-blue-50 to-cyan-50 text-blue-700 border border-blue-200 shadow-sm shadow-blue-100",
