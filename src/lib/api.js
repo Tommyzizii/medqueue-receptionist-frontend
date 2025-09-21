@@ -113,6 +113,39 @@ class MedqueueAPI {
     return this.request(`/appointments/queue/${patientId}`);
   }
 
+  // NEW METHODS FOR RECEPTIONIST DASHBOARD
+  
+  // Get today's appointments for receptionist dashboard
+  static async getTodaysAppointments() {
+    return this.request('/appointments/today');
+  }
+
+  // Update appointment status
+  static async updateAppointmentStatus(appointmentId, status) {
+    return this.request(`/appointments/${appointmentId}/status`, {
+      method: 'PUT',
+      body: { status },
+    });
+  }
+
+  // Create walk-in appointment
+  static async createWalkInAppointment(patientName, patientEmail, doctorId, dateTime) {
+    return this.request('/appointments/walk-in', {
+      method: 'POST',
+      body: { 
+        patientName, 
+        patientEmail, 
+        doctorId: doctorId || 'DOC001', 
+        dateTime: dateTime.toISOString() 
+      },
+    });
+  }
+
+  // Get queue data grouped by doctor (if you need this later)
+  static async getQueueByDoctor() {
+    return this.request('/appointments/queue');
+  }
+
   // Test API connection
   static async testConnection() {
     return this.request('/test');
